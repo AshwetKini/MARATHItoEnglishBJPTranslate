@@ -41,6 +41,18 @@ RELATIVE_NAME_EN = "Relative Full Name (English)"
 # ── IAST vowel characters (used for schwa deletion logic) ────────────────────
 IAST_VOWELS = set("aāiīuūeēoōṛṝ")
 
+# ── Marathi letter-name → English letter (for initials like टी. → T.) ─────
+# In Marathi, English letter initials are written phonetically in Devanagari.
+# e.g. "टी." is how you write "T." — it's the letter name, NOT a syllable.
+MARATHI_INITIALS_MAP = {
+    'ए': 'A', 'बी': 'B', 'सी': 'C', 'डी': 'D', 'ई': 'E',
+    'एफ': 'F', 'जी': 'G', 'एच': 'H', 'आय': 'I', 'जे': 'J',
+    'के': 'K', 'एल': 'L', 'एम': 'M', 'एन': 'N', 'ओ': 'O',
+    'पी': 'P', 'क्यू': 'Q', 'आर': 'R', 'एस': 'S', 'टी': 'T',
+    'यू': 'U', 'व्ही': 'V', 'डब्ल्यू': 'W', 'एक्स': 'X',
+    'वाय': 'Y', 'झेड': 'Z',
+}
+
 
 # ==============================================================================
 #  Transliteration Engine
@@ -65,6 +77,33 @@ def transliterate_marathi(text):
         return ""
     
     # If text has no Devanagari characters, return as-is
+    if not any('\u0900' <= ch <= '\u097F' for ch in text):
+        return text
+    
+    # ── Step 0a: Convert Marathi initials (टी. → T., बी. → B., etc.) ─────
+    # Detect Devanagari letter-names followed by a period and replace them
+    # with the corresponding single English letter.
+    tokens = text.split()
+    preprocessed = []
+    for token in tokens:
+        if token.endswith('.') and token[:-1] in MARATHI_INITIALS_MAP:
+            preprocessed.append(MARATHI_INITIALS_MAP[token[:-1]] + '.')
+        else:
+            preprocessed.append(token)
+    text = ' '.join(preprocessed)
+    
+    # ── Step 0b: Replace Marathi-specific vowel signs ─────────────────────
+    # These characters (used in Marathi for English loanwords / foreign
+    # sounds) are NOT handled by the indic_transliteration library — they
+    # pass through as raw Devanagari and get stripped later. Map them to
+    # the closest standard Devanagari equivalents before IAST conversion.
+    text = text.replace('\u0949', '\u094B')  # ॉ (candra O sign) → ो (O sign)
+    text = text.replace('\u0945', '\u0947')  # ॅ (candra E sign) → े (E sign)
+    text = text.replace('\u0911', '\u0913')  # ऑ (independent candra O) → ओ
+    text = text.replace('\u090D', '\u090F')  # ऍ (independent candra E) → ए
+    text = text.replace('\u0972', '\u0905')  # ॲ (candra A) → अ
+    
+    # After pre-processing, if no Devanagari remains, return as-is
     if not any('\u0900' <= ch <= '\u097F' for ch in text):
         return text
     
