@@ -114,14 +114,26 @@ def transliterate_marathi(text):
     # In Marathi, the inherent vowel 'a' (schwa) at the end of a word is
     # typically silent. In IAST, this appears as a lowercase 'a' after a
     # consonant. Long 'ā' (from explicit matra) is NOT deleted.
+    # Define consonant set for schwa logic (IAST consonants)
+    IAST_CONSONANTS = set("bcdfghjklmnpqrstvwxyzṭḍṇṅñśṣḷṃṁ")
+    
     words = iast.split()
     processed_words = []
     for word in words:
         if (len(word) > 2
                 and word[-1] == 'a'
-                and len(word) >= 2
                 and word[-2].lower() not in IAST_VOWELS):
-            word = word[:-1]
+            # Check if word ends with a consonant cluster + 'a' (e.g., 'dra', 'tra', 'kra')
+            # If the second-to-last AND third-to-last are both consonants, this 'a'
+            # belongs to a conjunct and should NOT be deleted.
+            if (len(word) >= 3
+                    and word[-2].lower() in IAST_CONSONANTS
+                    and word[-3].lower() in IAST_CONSONANTS
+                    and word[-3].lower() not in IAST_VOWELS):
+                # Consonant cluster ending — keep the 'a' (e.g., chandra, indra, putra)
+                pass
+            else:
+                word = word[:-1]
         processed_words.append(word)
     iast = ' '.join(processed_words)
     
