@@ -51,6 +51,10 @@ MARATHI_INITIALS_MAP = {
     'पी': 'P', 'क्यू': 'Q', 'आर': 'R', 'एस': 'S', 'टी': 'T',
     'यू': 'U', 'व्ही': 'V', 'डब्ल्यू': 'W', 'एक्स': 'X',
     'वाय': 'Y', 'झेड': 'Z',
+    # Some inputs store the letter-name "एस" as "ए"+"स" (missing virama),
+    # i.e. the sequence "एस" (U+090F + U+0938). Keeping this entry
+    # as a single source of truth.
+    'एस': 'S',
 }
 
 
@@ -83,14 +87,114 @@ def transliterate_marathi(text):
     # ── Step 0a: Convert Marathi initials (टी. → T., बी. → B., etc.) ─────
     # Detect Devanagari letter-names followed by a period and replace them
     # with the corresponding single English letter.
-    tokens = text.split()
-    preprocessed = []
-    for token in tokens:
-        if token.endswith('.') and token[:-1] in MARATHI_INITIALS_MAP:
-            preprocessed.append(MARATHI_INITIALS_MAP[token[:-1]] + '.')
+    # Important: initials can be written compactly like "सी.एस." (no spaces).
+    # So we do regex replacements over the whole string, not only by tokens.
+    # Also handle compact chained initials where the last dot may be missing,
+    # e.g. "के.के" should become "K. K." (not "KKe").
+    # Sort by length desc so longer letter-names (e.g. "आय", "एस") are not
+    # partially matched as their prefix parts (e.g. "ए") when using alternation.
+    keys_sorted = sorted(MARATHI_INITIALS_MAP.keys(), key=len, reverse=True)
+    letters_alt_1 = "|".join(re.escape(k) for k in keys_sorted)
+    # For group2, prevent partial-match of the single initial "ए" inside the
+    # two-character initial "एस" (which starts with "ए"+"स").
+    letters_alt_2_parts = []
+    for k in keys_sorted:
+        if k == 'ए':
+            letters_alt_2_parts.append(re.escape(k) + '(?!' + re.escape('स') + ')')
         else:
-            preprocessed.append(token)
-    text = ' '.join(preprocessed)
+            letters_alt_2_parts.append(re.escape(k))
+    letters_alt_2 = "|".join(letters_alt_2_parts)
+
+    # Replace "DEV1 . DEV2" (no trailing dot after DEV2) with "E1. E2."
+    text = re.sub(
+        rf"({letters_alt_1})\.\s*({letters_alt_2})(?!\.)",
+        lambda m: f"{MARATHI_INITIALS_MAP[m.group(1)]}. {MARATHI_INITIALS_MAP[m.group(2)]}.",
+        text
+    )
+
+    for dev, eng in MARATHI_INITIALS_MAP.items():
+        text = re.sub(rf'{re.escape(dev)}\.', f'{eng}.', text)
+
+    # ── Step 0c: Dotless Marathi initials using spacing/tokens ─────────────
+    # Sometimes initials appear without '.' like:
+    #   "मकवाना इर्श्वरभाई के"  ->  ... K
+    #   "नायर सी एस पाटील"    ->  Nayar C. S. Patil
+    # Heuristic:
+    #   - If we find a run of >=2 standalone initial-tokens next to each other
+    #     (separated only by whitespace), output them as "X. Y. Z."
+    #   - If we find a single standalone initial-token and it is the last
+    #     non-whitespace token in the string, output it as "X" (no dot).
+    initial_keys = set(MARATHI_INITIALS_MAP.keys())
+    parts = re.split(r'(\s+)', text)  # keep whitespace separators
+    token_indices = [i for i, p in enumerate(parts) if p and not p.isspace()]
+
+    def _deva_core(tok: str) -> str:
+        # Extract the Devanagari letter sequence inside the token
+        # (ignore punctuation like ',', '.' around it).
+        m = re.search(r'[\u0900-\u097F]+', tok)
+        if not m:
+            return ""
+        core = m.group(0)
+        # Must be exactly the initial token (no extra characters).
+        # This avoids converting normal Marathi words accidentally.
+        if core in initial_keys:
+            return core
+        return ""
+
+    flags = [False] * len(parts)
+    core_map = {}  # index -> core
+    for idx in token_indices:
+        tok = parts[idx]
+        core = _deva_core(tok)
+        if core:
+            flags[idx] = True
+            core_map[idx] = core
+
+    if token_indices:
+        last_token_idx = token_indices[-1]
+        i = 0
+        while i < len(token_indices):
+            start = token_indices[i]
+            if not flags[start]:
+                i += 1
+                continue
+
+            # Build a consecutive run of initial tokens (no other non-whitespace tokens in between).
+            run = [start]
+            j = i + 1
+            while j < len(token_indices) and token_indices[j] == token_indices[j-1] + 2 and flags[token_indices[j]]:
+                run.append(token_indices[j])
+                j += 1
+
+            if len(run) >= 2:
+                # X. Y. Z.
+                for ridx in run:
+                    tok = parts[ridx]
+                    core = core_map[ridx]
+                    letter = MARATHI_INITIALS_MAP[core]
+                    # Preserve any punctuation around the core token.
+                    m = re.search(r'[\u0900-\u097F]+', tok)
+                    if not m:
+                        continue
+                    prefix = tok[:m.start()]
+                    suffix = tok[m.end():]
+                    parts[ridx] = prefix + letter + '.' + suffix
+            else:
+                # Single initial at the end => "X" (no dot).
+                ridx = run[0]
+                if ridx == last_token_idx:
+                    tok = parts[ridx]
+                    core = core_map[ridx]
+                    letter = MARATHI_INITIALS_MAP[core]
+                    m = re.search(r'[\u0900-\u097F]+', tok)
+                    if m:
+                        prefix = tok[:m.start()]
+                        suffix = tok[m.end():]
+                        parts[ridx] = prefix + letter + suffix
+
+            i = j
+
+    text = ''.join(parts)
     
     # ── Step 0b: Replace Marathi-specific vowel signs ─────────────────────
     # These characters (used in Marathi for English loanwords / foreign
@@ -102,26 +206,86 @@ def transliterate_marathi(text):
     text = text.replace('\u0911', '\u0913')  # ऑ (independent candra O) → ओ
     text = text.replace('\u090D', '\u090F')  # ऍ (independent candra E) → ए
     text = text.replace('\u0972', '\u0905')  # ॲ (candra A) → अ
+    text = text.replace('\u0901', '\u0902')  # ँ (chandrabindu) → ं (anusvara)
     
     # After pre-processing, if no Devanagari remains, return as-is
     if not any('\u0900' <= ch <= '\u097F' for ch in text):
+        # Normally we return as-is for non-Devanagari.
+        # Only apply formatting if the string looks like dotted initials,
+        # e.g. "T. B. C." or compact "C.S.".
+        if re.search(r'\b[A-Z]\.', text):
+            # If initials are written compactly, add a space between them: "C.S." -> "C. S."
+            text = re.sub(r'\b([A-Z])\.([A-Z])\.', r'\1. \2.', text)
+
+            # Remove dots only for truly standalone initials (not part of chains like "C. S.")
+            text = re.sub(
+                r'(?<!\b[A-Z]\.\s)\b([A-Z])\.(?!\s*[A-Z]\.)',
+                r'\1',
+                text
+            )
+
+            # If a dotted initial is immediately followed by a new capitalized word,
+            # add a space: "C. S.Patil" -> "C. S. Patil"
+            text = re.sub(r'(\b[A-Z]\.)\s*(?=[A-Z])', r'\1 ', text)
+
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text
+
         return text
     
     # ── Step 1: IAST transliteration ──────────────────────────────────────
     iast = sanscript.transliterate(text, sanscript.DEVANAGARI, sanscript.IAST)
     
+    # ── Step 1b: Clean up nukta-produced combining diacritics ─────────────
+    # ड़ → r̤ (r + combining dot below), ढ़ → r̤h — normalize to 'r'
+    # ख़ → k͟h (k + combining macron below) — normalize to 'kh'
+    iast = iast.replace('r\u0324', 'r')   # r + combining diaeresis below → r
+    iast = iast.replace('k\u035F', 'k')   # k + combining double macron below → k
+    
     # ── Step 2: Marathi schwa deletion ────────────────────────────────────
     # In Marathi, the inherent vowel 'a' (schwa) at the end of a word is
     # typically silent. In IAST, this appears as a lowercase 'a' after a
     # consonant. Long 'ā' (from explicit matra) is NOT deleted.
+    #
+    # IMPORTANT: We detect true consonant conjuncts (e.g., द्र, त्र) by
+    # checking the ORIGINAL Devanagari text for virama (्) before the last
+    # consonant. Digraphs in IAST like 'kh', 'gh', 'th' represent SINGLE
+    # Devanagari consonants and should NOT prevent schwa deletion.
+    
+    # Check if original Devanagari word ends with a conjunct (has virama
+    # near the end), which means the trailing 'a' in IAST is needed.
+    original_words = text.split()
+    
     words = iast.split()
     processed_words = []
-    for word in words:
+    for i, word in enumerate(words):
         if (len(word) > 2
                 and word[-1] == 'a'
-                and len(word) >= 2
                 and word[-2].lower() not in IAST_VOWELS):
-            word = word[:-1]
+            # Check the original Devanagari word for a virama (्) near the end.
+            # Virama before the last consonant means it's a conjunct like द्र,
+            # and the trailing 'a' is the real vowel of the final consonant.
+            has_conjunct_ending = False
+            if i < len(original_words):
+                orig = original_words[i]
+                # Look for virama (\u094D) in last 3 characters of original word
+                # (conjuncts like द्र have virama between the two consonants)
+                if len(orig) >= 2:
+                    # Check if any of the last few chars contain virama
+                    tail = orig[-3:] if len(orig) >= 3 else orig
+                    # Virama should be present but NOT be the very last char
+                    # (if virama is last, the consonant has no vowel - halant form)
+                    virama_positions = [j for j, ch in enumerate(tail) if ch == '\u094D']
+                    for vp in virama_positions:
+                        # Virama followed by another consonant = conjunct ending
+                        if vp < len(tail) - 1:
+                            has_conjunct_ending = True
+            
+            if has_conjunct_ending:
+                # Consonant cluster ending — keep the 'a' (e.g., chandra, indra, putra)
+                pass
+            else:
+                word = word[:-1]
         processed_words.append(word)
     iast = ' '.join(processed_words)
     
@@ -141,7 +305,11 @@ def transliterate_marathi(text):
     # names, both are written with 'ch'. We convert 'c' → 'ch' first,
     # which makes 'ch' (छ) become 'chh' — standard English convention.
     iast = re.sub(r'(?<![s])c(?!h)', 'ch', iast)   # c → ch (avoid sc, already-ch)
-    iast = re.sub(r'(?<![S])C(?!h)', 'Ch', iast)   # C → Ch
+    # Uppercase 'C' can appear for our Marathi-English letter initials
+    # (e.g. "सी." is preprocessed to "C."). Avoid converting those standalone
+    # initials into "Ch." by only applying when the next character is not
+    # whitespace/dot punctuation.
+    iast = re.sub(r'(?<![S])C(?!h)(?![.\s])', 'Ch', iast)   # C → Ch (inside words)
     
     # ── Step 4: Replace IAST diacritics with plain English ────────────────
     diacritics_map = [
@@ -175,6 +343,20 @@ def transliterate_marathi(text):
     # Professional title case
     result = result.title()
     
+    # If initials are written compactly, add a space between them: "C.S." -> "C. S."
+    result = re.sub(r'\b([A-Z])\.([A-Z])\.', r'\1. \2.', result)
+    
+    # Remove dots only for standalone initials like "C." -> "C",
+    # but keep dots when followed by another dotted initial: "C. S." stays "C. S."
+    result = re.sub(
+        r'(?<!\b[A-Z]\.\s)\b([A-Z])\.(?!\s*[A-Z]\.)',
+        r'\1',
+        result
+    )
+    # If a dotted initial is immediately followed by a new capitalized word,
+    # add a space: "C. S.Patil" -> "C. S. Patil"
+    result = re.sub(r'(\b[A-Z]\.)\s*(?=[A-Z])', r'\1 ', result)
+
     return result
 
 
