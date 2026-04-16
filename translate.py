@@ -51,6 +51,11 @@ MARATHI_INITIALS_MAP = {
     'पी': 'P', 'क्यू': 'Q', 'आर': 'R', 'एस': 'S', 'टी': 'T',
     'यू': 'U', 'व्ही': 'V', 'डब्ल्यू': 'W', 'एक्स': 'X',
     'वाय': 'Y', 'झेड': 'Z',
+    # Some inputs store the letter-name "एस" as "ए"+"स" (missing virama),
+    # i.e. the sequence "एस" (U+090F + U+0938).
+    'एस': 'S',
+    # Also support literal sequence "ए"+"स" as it may appear in some sources.
+    'एस': 'S',
 }
 
 
@@ -85,6 +90,29 @@ def transliterate_marathi(text):
     # with the corresponding single English letter.
     # Important: initials can be written compactly like "सी.एस." (no spaces).
     # So we do regex replacements over the whole string, not only by tokens.
+    # Also handle compact chained initials where the last dot may be missing,
+    # e.g. "के.के" should become "K. K." (not "KKe").
+    # Sort by length desc so longer letter-names (e.g. "आय", "एस") are not
+    # partially matched as their prefix parts (e.g. "ए") when using alternation.
+    keys_sorted = sorted(MARATHI_INITIALS_MAP.keys(), key=len, reverse=True)
+    letters_alt_1 = "|".join(re.escape(k) for k in keys_sorted)
+    # For group2, prevent partial-match of the single initial "ए" inside the
+    # two-character initial "एस" (which starts with "ए"+"स").
+    letters_alt_2_parts = []
+    for k in keys_sorted:
+        if k == 'ए':
+            letters_alt_2_parts.append(re.escape(k) + '(?!' + re.escape('स') + ')')
+        else:
+            letters_alt_2_parts.append(re.escape(k))
+    letters_alt_2 = "|".join(letters_alt_2_parts)
+
+    # Replace "DEV1 . DEV2" (no trailing dot after DEV2) with "E1. E2."
+    text = re.sub(
+        rf"({letters_alt_1})\.\s*({letters_alt_2})(?!\.)",
+        lambda m: f"{MARATHI_INITIALS_MAP[m.group(1)]}. {MARATHI_INITIALS_MAP[m.group(2)]}.",
+        text
+    )
+
     for dev, eng in MARATHI_INITIALS_MAP.items():
         text = re.sub(rf'{re.escape(dev)}\.', f'{eng}.', text)
     
