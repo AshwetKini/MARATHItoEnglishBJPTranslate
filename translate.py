@@ -52,9 +52,8 @@ MARATHI_INITIALS_MAP = {
     'यू': 'U', 'व्ही': 'V', 'डब्ल्यू': 'W', 'एक्स': 'X',
     'वाय': 'Y', 'झेड': 'Z',
     # Some inputs store the letter-name "एस" as "ए"+"स" (missing virama),
-    # i.e. the sequence "एस" (U+090F + U+0938).
-    'एस': 'S',
-    # Also support literal sequence "ए"+"स" as it may appear in some sources.
+    # i.e. the sequence "एस" (U+090F + U+0938). Keeping this entry
+    # as a single source of truth.
     'एस': 'S',
 }
 
@@ -115,6 +114,87 @@ def transliterate_marathi(text):
 
     for dev, eng in MARATHI_INITIALS_MAP.items():
         text = re.sub(rf'{re.escape(dev)}\.', f'{eng}.', text)
+
+    # ── Step 0c: Dotless Marathi initials using spacing/tokens ─────────────
+    # Sometimes initials appear without '.' like:
+    #   "मकवाना इर्श्वरभाई के"  ->  ... K
+    #   "नायर सी एस पाटील"    ->  Nayar C. S. Patil
+    # Heuristic:
+    #   - If we find a run of >=2 standalone initial-tokens next to each other
+    #     (separated only by whitespace), output them as "X. Y. Z."
+    #   - If we find a single standalone initial-token and it is the last
+    #     non-whitespace token in the string, output it as "X" (no dot).
+    initial_keys = set(MARATHI_INITIALS_MAP.keys())
+    parts = re.split(r'(\s+)', text)  # keep whitespace separators
+    token_indices = [i for i, p in enumerate(parts) if p and not p.isspace()]
+
+    def _deva_core(tok: str) -> str:
+        # Extract the Devanagari letter sequence inside the token
+        # (ignore punctuation like ',', '.' around it).
+        m = re.search(r'[\u0900-\u097F]+', tok)
+        if not m:
+            return ""
+        core = m.group(0)
+        # Must be exactly the initial token (no extra characters).
+        # This avoids converting normal Marathi words accidentally.
+        if core in initial_keys:
+            return core
+        return ""
+
+    flags = [False] * len(parts)
+    core_map = {}  # index -> core
+    for idx in token_indices:
+        tok = parts[idx]
+        core = _deva_core(tok)
+        if core:
+            flags[idx] = True
+            core_map[idx] = core
+
+    if token_indices:
+        last_token_idx = token_indices[-1]
+        i = 0
+        while i < len(token_indices):
+            start = token_indices[i]
+            if not flags[start]:
+                i += 1
+                continue
+
+            # Build a consecutive run of initial tokens (no other non-whitespace tokens in between).
+            run = [start]
+            j = i + 1
+            while j < len(token_indices) and token_indices[j] == token_indices[j-1] + 2 and flags[token_indices[j]]:
+                run.append(token_indices[j])
+                j += 1
+
+            if len(run) >= 2:
+                # X. Y. Z.
+                for ridx in run:
+                    tok = parts[ridx]
+                    core = core_map[ridx]
+                    letter = MARATHI_INITIALS_MAP[core]
+                    # Preserve any punctuation around the core token.
+                    m = re.search(r'[\u0900-\u097F]+', tok)
+                    if not m:
+                        continue
+                    prefix = tok[:m.start()]
+                    suffix = tok[m.end():]
+                    parts[ridx] = prefix + letter + '.' + suffix
+            else:
+                # Single initial at the end => "X" (no dot).
+                ridx = run[0]
+                if ridx == last_token_idx:
+                    tok = parts[ridx]
+                    core = core_map[ridx]
+                    letter = MARATHI_INITIALS_MAP[core]
+                    m = re.search(r'[\u0900-\u097F]+', tok)
+                    if m:
+                        prefix = tok[:m.start()]
+                        suffix = tok[m.end():]
+                        parts[ridx] = prefix + letter + suffix
+
+            i = j
+
+    text = ''.join(parts)
     
     # ── Step 0b: Replace Marathi-specific vowel signs ─────────────────────
     # These characters (used in Marathi for English loanwords / foreign
