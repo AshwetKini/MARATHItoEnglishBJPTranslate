@@ -106,7 +106,11 @@ def transliterate_marathi(text):
     
     # After pre-processing, if no Devanagari remains, return as-is
     if not any('\u0900' <= ch <= '\u097F' for ch in text):
-        return text
+        # Still normalize standalone single-letter initials like "C." -> "C"
+        # (these can happen when the input contains only initials, e.g. "टी. बी.")
+        text = re.sub(r'\b([A-Z])\.(?=\s|$)', r'\1', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text.title()
     
     # ── Step 1: IAST transliteration ──────────────────────────────────────
     iast = sanscript.transliterate(text, sanscript.DEVANAGARI, sanscript.IAST)
@@ -180,7 +184,11 @@ def transliterate_marathi(text):
     # names, both are written with 'ch'. We convert 'c' → 'ch' first,
     # which makes 'ch' (छ) become 'chh' — standard English convention.
     iast = re.sub(r'(?<![s])c(?!h)', 'ch', iast)   # c → ch (avoid sc, already-ch)
-    iast = re.sub(r'(?<![S])C(?!h)', 'Ch', iast)   # C → Ch
+    # Uppercase 'C' can appear for our Marathi-English letter initials
+    # (e.g. "सी." is preprocessed to "C."). Avoid converting those standalone
+    # initials into "Ch." by only applying when the next character is not
+    # whitespace/dot punctuation.
+    iast = re.sub(r'(?<![S])C(?!h)(?![.\s])', 'Ch', iast)   # C → Ch (inside words)
     
     # ── Step 4: Replace IAST diacritics with plain English ────────────────
     diacritics_map = [
@@ -214,6 +222,10 @@ def transliterate_marathi(text):
     # Professional title case
     result = result.title()
     
+    # Remove dots in standalone initials like "C." -> "C"
+    # (commonly produced by Marathi-English letter initials such as "सी.")
+    result = re.sub(r'\b([A-Z])\.(?=\s|$)', r'\1', result)
+
     return result
 
 
