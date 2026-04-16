@@ -102,20 +102,28 @@ def transliterate_marathi(text):
     
     # After pre-processing, if no Devanagari remains, return as-is
     if not any('\u0900' <= ch <= '\u097F' for ch in text):
-        # Still normalize standalone single-letter initials like "C." -> "C"
-        # (these can happen when the input contains only initials, e.g. "टी. बी.")
-        text = re.sub(r'\b([A-Z])\.([A-Z])\.', r'\1. \2.', text)  # C.S. -> C. S.
-        # Remove dot only for truly standalone initials (not part of chains like "C. S.")
-        text = re.sub(
-            r'(?<!\b[A-Z]\.\s)\b([A-Z])\.(?!\s*[A-Z]\.)',
-            r'\1',
-            text
-        )
-        # If a dotted initial is immediately followed by a new capitalized word,
-        # add a space: "C. S.Patil" -> "C. S. Patil"
-        text = re.sub(r'(\b[A-Z]\.)\s*(?=[A-Z])', r'\1 ', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text.title()
+        # Normally we return as-is for non-Devanagari.
+        # Only apply formatting if the string looks like dotted initials,
+        # e.g. "T. B. C." or compact "C.S.".
+        if re.search(r'\b[A-Z]\.', text):
+            # If initials are written compactly, add a space between them: "C.S." -> "C. S."
+            text = re.sub(r'\b([A-Z])\.([A-Z])\.', r'\1. \2.', text)
+
+            # Remove dots only for truly standalone initials (not part of chains like "C. S.")
+            text = re.sub(
+                r'(?<!\b[A-Z]\.\s)\b([A-Z])\.(?!\s*[A-Z]\.)',
+                r'\1',
+                text
+            )
+
+            # If a dotted initial is immediately followed by a new capitalized word,
+            # add a space: "C. S.Patil" -> "C. S. Patil"
+            text = re.sub(r'(\b[A-Z]\.)\s*(?=[A-Z])', r'\1 ', text)
+
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text
+
+        return text
     
     # ── Step 1: IAST transliteration ──────────────────────────────────────
     iast = sanscript.transliterate(text, sanscript.DEVANAGARI, sanscript.IAST)
