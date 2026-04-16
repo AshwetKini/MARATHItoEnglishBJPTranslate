@@ -102,6 +102,7 @@ def transliterate_marathi(text):
     text = text.replace('\u0911', '\u0913')  # ऑ (independent candra O) → ओ
     text = text.replace('\u090D', '\u090F')  # ऍ (independent candra E) → ए
     text = text.replace('\u0972', '\u0905')  # ॲ (candra A) → अ
+    text = text.replace('\u0901', '\u0902')  # ँ (chandrabindu) → ं (anusvara)
     
     # After pre-processing, if no Devanagari remains, return as-is
     if not any('\u0900' <= ch <= '\u097F' for ch in text):
@@ -110,26 +111,52 @@ def transliterate_marathi(text):
     # ── Step 1: IAST transliteration ──────────────────────────────────────
     iast = sanscript.transliterate(text, sanscript.DEVANAGARI, sanscript.IAST)
     
+    # ── Step 1b: Clean up nukta-produced combining diacritics ─────────────
+    # ड़ → r̤ (r + combining dot below), ढ़ → r̤h — normalize to 'r'
+    # ख़ → k͟h (k + combining macron below) — normalize to 'kh'
+    iast = iast.replace('r\u0324', 'r')   # r + combining diaeresis below → r
+    iast = iast.replace('k\u035F', 'k')   # k + combining double macron below → k
+    
     # ── Step 2: Marathi schwa deletion ────────────────────────────────────
     # In Marathi, the inherent vowel 'a' (schwa) at the end of a word is
     # typically silent. In IAST, this appears as a lowercase 'a' after a
     # consonant. Long 'ā' (from explicit matra) is NOT deleted.
-    # Define consonant set for schwa logic (IAST consonants)
-    IAST_CONSONANTS = set("bcdfghjklmnpqrstvwxyzṭḍṇṅñśṣḷṃṁ")
+    #
+    # IMPORTANT: We detect true consonant conjuncts (e.g., द्र, त्र) by
+    # checking the ORIGINAL Devanagari text for virama (्) before the last
+    # consonant. Digraphs in IAST like 'kh', 'gh', 'th' represent SINGLE
+    # Devanagari consonants and should NOT prevent schwa deletion.
+    
+    # Check if original Devanagari word ends with a conjunct (has virama
+    # near the end), which means the trailing 'a' in IAST is needed.
+    original_words = text.split()
     
     words = iast.split()
     processed_words = []
-    for word in words:
+    for i, word in enumerate(words):
         if (len(word) > 2
                 and word[-1] == 'a'
                 and word[-2].lower() not in IAST_VOWELS):
-            # Check if word ends with a consonant cluster + 'a' (e.g., 'dra', 'tra', 'kra')
-            # If the second-to-last AND third-to-last are both consonants, this 'a'
-            # belongs to a conjunct and should NOT be deleted.
-            if (len(word) >= 3
-                    and word[-2].lower() in IAST_CONSONANTS
-                    and word[-3].lower() in IAST_CONSONANTS
-                    and word[-3].lower() not in IAST_VOWELS):
+            # Check the original Devanagari word for a virama (्) near the end.
+            # Virama before the last consonant means it's a conjunct like द्र,
+            # and the trailing 'a' is the real vowel of the final consonant.
+            has_conjunct_ending = False
+            if i < len(original_words):
+                orig = original_words[i]
+                # Look for virama (\u094D) in last 3 characters of original word
+                # (conjuncts like द्र have virama between the two consonants)
+                if len(orig) >= 2:
+                    # Check if any of the last few chars contain virama
+                    tail = orig[-3:] if len(orig) >= 3 else orig
+                    # Virama should be present but NOT be the very last char
+                    # (if virama is last, the consonant has no vowel - halant form)
+                    virama_positions = [j for j, ch in enumerate(tail) if ch == '\u094D']
+                    for vp in virama_positions:
+                        # Virama followed by another consonant = conjunct ending
+                        if vp < len(tail) - 1:
+                            has_conjunct_ending = True
+            
+            if has_conjunct_ending:
                 # Consonant cluster ending — keep the 'a' (e.g., chandra, indra, putra)
                 pass
             else:
