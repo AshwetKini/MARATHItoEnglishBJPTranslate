@@ -83,14 +83,10 @@ def transliterate_marathi(text):
     # ── Step 0a: Convert Marathi initials (टी. → T., बी. → B., etc.) ─────
     # Detect Devanagari letter-names followed by a period and replace them
     # with the corresponding single English letter.
-    tokens = text.split()
-    preprocessed = []
-    for token in tokens:
-        if token.endswith('.') and token[:-1] in MARATHI_INITIALS_MAP:
-            preprocessed.append(MARATHI_INITIALS_MAP[token[:-1]] + '.')
-        else:
-            preprocessed.append(token)
-    text = ' '.join(preprocessed)
+    # Important: initials can be written compactly like "सी.एस." (no spaces).
+    # So we do regex replacements over the whole string, not only by tokens.
+    for dev, eng in MARATHI_INITIALS_MAP.items():
+        text = re.sub(rf'{re.escape(dev)}\.', f'{eng}.', text)
     
     # ── Step 0b: Replace Marathi-specific vowel signs ─────────────────────
     # These characters (used in Marathi for English loanwords / foreign
@@ -108,7 +104,16 @@ def transliterate_marathi(text):
     if not any('\u0900' <= ch <= '\u097F' for ch in text):
         # Still normalize standalone single-letter initials like "C." -> "C"
         # (these can happen when the input contains only initials, e.g. "टी. बी.")
-        text = re.sub(r'\b([A-Z])\.(?=\s|$)', r'\1', text)
+        text = re.sub(r'\b([A-Z])\.([A-Z])\.', r'\1. \2.', text)  # C.S. -> C. S.
+        # Remove dot only for truly standalone initials (not part of chains like "C. S.")
+        text = re.sub(
+            r'(?<!\b[A-Z]\.\s)\b([A-Z])\.(?!\s*[A-Z]\.)',
+            r'\1',
+            text
+        )
+        # If a dotted initial is immediately followed by a new capitalized word,
+        # add a space: "C. S.Patil" -> "C. S. Patil"
+        text = re.sub(r'(\b[A-Z]\.)\s*(?=[A-Z])', r'\1 ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text.title()
     
@@ -222,9 +227,19 @@ def transliterate_marathi(text):
     # Professional title case
     result = result.title()
     
-    # Remove dots in standalone initials like "C." -> "C"
-    # (commonly produced by Marathi-English letter initials such as "सी.")
-    result = re.sub(r'\b([A-Z])\.(?=\s|$)', r'\1', result)
+    # If initials are written compactly, add a space between them: "C.S." -> "C. S."
+    result = re.sub(r'\b([A-Z])\.([A-Z])\.', r'\1. \2.', result)
+    
+    # Remove dots only for standalone initials like "C." -> "C",
+    # but keep dots when followed by another dotted initial: "C. S." stays "C. S."
+    result = re.sub(
+        r'(?<!\b[A-Z]\.\s)\b([A-Z])\.(?!\s*[A-Z]\.)',
+        r'\1',
+        result
+    )
+    # If a dotted initial is immediately followed by a new capitalized word,
+    # add a space: "C. S.Patil" -> "C. S. Patil"
+    result = re.sub(r'(\b[A-Z]\.)\s*(?=[A-Z])', r'\1 ', result)
 
     return result
 
